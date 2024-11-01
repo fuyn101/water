@@ -11,6 +11,7 @@
   "dependencies": {
     "@vitejs/plugin-vue-jsx": "^4.0.1",
     "axios": "^1.7.7",
+    "ol": "^10.2.1",
     "unplugin-vue-components": "^0.27.4",
     "vue": "^3.5.12"
   },
