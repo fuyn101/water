@@ -1,11 +1,8 @@
 from flask import Flask, send_from_directory, jsonify
 import os
 import json
-from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_sock import Sock
-import os
-import json
 
 app = Flask(__name__, static_folder="./vue-project/dist", static_url_path="")
 sock = Sock(app)
@@ -22,7 +19,7 @@ def serve_index(path):
 
 @app.route("/data")
 def get_data():
-    with open("data.json") as f:
+    with open("data.json", encoding="utf-8") as f:
         data = json.load(f)
         print(data)
     return jsonify(data)

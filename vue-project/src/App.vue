@@ -1,11 +1,11 @@
 <script setup>
 import HelloWorld from './components/HelloWorld.vue'
-import TheWelcome from './components/TheWelcome.vue'
+
 </script>
 
 <template>
   <header>
-    <img alt="Vue logo" class="logo" src="./assets/logo.svg" width="125" height="125" />
+
 
     <div class="wrapper">
       <HelloWorld msg="You did it!" />
@@ -13,7 +13,17 @@ import TheWelcome from './components/TheWelcome.vue'
   </header>
 
   <main>
-    <TheWelcome />
+
+    <div>
+  对地图的操作： <button>放大</button>
+  <button>缩小</button>
+  <button>拖动</button>
+</div>
+<br/>
+  前端增加<button>投点</button>、
+  
+ 
+  <button> 新建物联网接口流程(仅做页面)</button>
   </main>
 </template>
 

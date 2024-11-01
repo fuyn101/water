@@ -1,8 +1,13 @@
 <template>
+      假设这里是地图<br/>
+      
+      <img alt="Vue logo" class="logo" src="../assets/logo.svg" width="125" height="125" />
   <div>
     <h1>{{ title }}</h1>
-    <p>{{ json }}</p> <!-- Changed "content" to "json" -->
+    <p>{{ json }}</p> 
+
   </div>
+
 </template>
 
 <script setup>
