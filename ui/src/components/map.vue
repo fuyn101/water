@@ -1,17 +1,10 @@
 <template>
   <div>
-    <div>
-      对地图的操作： <button>放大</button>
-      <button>缩小</button>
-      <button>拖动</button>
-    </div>
-    前端增加:
-    <div><button>投点</button> <button>新建物联网接口流程(仅做页面)</button></div>
+    <button @click="addPoint">投点</button>
+    <button @click="createIoTProcess">新建物联网接口流程(仅做页面)</button>
   </div>
 
-  <div id="map-container">
-    <div id="map" class="map"></div>
-  </div>
+  <div id="map" class="map"></div>
 </template>
 
 <script setup>
@@ -26,22 +19,21 @@ import Feature from 'ol/Feature'
 import LineString from 'ol/geom/LineString'
 import { fromLonLat } from 'ol/proj'
 import { Stroke, Style } from 'ol/style'
+import OSM from 'ol/source/OSM'
+import TileLayer from 'ol/layer/Tile'
 
-const json = ref('')
+const map = ref(null)
 
-// Fetch GeoJSON data from server
-async function fetchGeoJSON() {
+const fetchGeoJSON = async () => {
   try {
     const response = await fetch('./map/焦作市.json')
-    const data = await response.json()
-    return data
+    return await response.json()
   } catch (error) {
     console.error('Error fetching GeoJSON data:', error)
   }
 }
 
-// Fetch line data from API and create features
-async function fetchJsonLine() {
+const fetchJsonLine = async () => {
   try {
     const response = await fetch('http://127.0.0.1:8000/api/lines')
     const Linedata = await response.json()
@@ -49,10 +41,7 @@ async function fetchJsonLine() {
       (line) =>
         new Feature({
           geometry: new LineString(line.geometry.coordinates.map((coord) => fromLonLat(coord))),
-          properties: {
-            color: line.properties.color,
-            name: line.properties.name
-          }
+          properties: line.properties
         })
     )
   } catch (error) {
@@ -60,63 +49,49 @@ async function fetchJsonLine() {
   }
 }
 
-onMounted(async () => {
-  // Load GeoJSON data
+const initializeMap = async () => {
   const geojsonData = await fetchGeoJSON()
-
-  // Create GeoJSON layer
   const geojsonLayer = new VectorLayer({
     source: new VectorSource({
       features: new GeoJSON().readFeatures(geojsonData, { featureProjection: 'EPSG:3857' })
     }),
     style: new Style({
-      stroke: new Stroke({
-        color: 'red',
-        width: 2
-      })
+      stroke: new Stroke({ color: 'red', width: 2 })
     })
   })
 
-  // Load line features from JSON data
   const lineFeatures = await fetchJsonLine()
   const lineLayer = new VectorLayer({
-    source: new VectorSource({
-      features: lineFeatures
-    }),
-    style: function (feature) {
-      return new Style({
-        stroke: new Stroke({
-          color: feature.get('color') || 'black',
-          width: 3
-        })
-      })
-    }
+    source: new VectorSource({ features: lineFeatures }),
+    style: new Style({
+      stroke: new Stroke({ color: 'black', width: 3 })
+    })
   })
 
-  // Initialize map
-  new Map({
+  const basemap = new TileLayer({ source: new OSM() })
+
+  map.value = new Map({
     target: 'map',
-    layers: [geojsonLayer, lineLayer],
+    layers: [basemap, geojsonLayer, lineLayer],
     view: new View({
-      center: fromLonLat([113.2418, 35.2159]),
-      zoom: 6,
+      center: fromLonLat([113.238266, 35.23904]),
+      zoom: 9,
       extent: [...fromLonLat([110.35, 31.38]), ...fromLonLat([116.65, 36.22])]
     })
   })
-})
+}
+
+onMounted(initializeMap)
 </script>
 
 <style>
-#map-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
 #map {
-  width: 600px;
-  height: 400px;
-  margin-bottom: 20px;
+  width: 80vw;
+  /* 80% of the viewport width */
+  height: 80vh;
+  /* 50% of the viewport height */
+  margin-bottom: 2px;
+  /* 2% of the viewport height */
 }
 
 .logo {
