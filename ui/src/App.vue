@@ -1,30 +1,11 @@
 <script setup>
-import HelloWorld from './components/HelloWorld.vue'
-
+import JsonMap from './components/map.vue';
 </script>
 
 <template>
-  <header>
-
-
-    <div class="wrapper">
-      <HelloWorld/>
-    </div>
-  </header>
-
-  <main>
-
-    <div>
-  对地图的操作： <button>放大</button>
-  <button>缩小</button>
-  <button>拖动</button>
-</div>
-<br/>
-  前端增加<button>投点</button>、
-  
- 
-  <button> 新建物联网接口流程(仅做页面)</button>
-  </main>
+  <div>
+    <JsonMap />
+  </div>
 </template>
 
 <style scoped>

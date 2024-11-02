@@ -4,7 +4,7 @@ import json
 from flask_cors import CORS
 from flask_sock import Sock
 
-app = Flask(__name__, static_folder="./vue-project/dist", static_url_path="")
+app = Flask(__name__, static_folder="./ui/dist", static_url_path="")
 sock = Sock(app)
 CORS(app)
 
@@ -15,6 +15,34 @@ def serve_index(path):
     if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/api/lines", methods=["GET"])
+def get_lines():
+    lines = [
+        {
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[113.5, 34.8], [114.0, 35.0]],
+            },
+            "properties": {"color": "red", "name": "Line 1"},
+        },
+        {
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[112.0, 34.5], [113.0, 35.5]],
+            },
+            "properties": {"color": "red", "name": "Line 2"},
+        },
+        {
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[111.0, 33.8], [112.5, 34.3]],
+            },
+            "properties": {"color": "red", "name": "Line 3"},
+        },
+    ]
+    return jsonify(lines)
 
 
 @app.route("/data")
