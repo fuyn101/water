@@ -4,6 +4,9 @@ import JsonMap from './components/map.vue'
 
 <template>
   <div>
+    <h1>检测</h1>
+  </div>
+  <div>
     <JsonMap />
   </div>
 </template>

@@ -1,7 +1,7 @@
 <template>
   <div>
-    <button @click="addPoint">投点</button>
-    <button @click="createIoTProcess">新建物联网接口流程(仅做页面)</button>
+    <n-button type="primary" @click="addPoint">投点</n-button>
+    <n-button type="primary" @click="createIoTProcess">新建物联网接口流程(仅做页面)</n-button>
   </div>
 
   <div id="map" class="map"></div>
