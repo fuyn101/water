@@ -26,7 +26,7 @@ const map = ref(null)
 
 const fetchGeoJSON = async () => {
   try {
-    const response = await fetch('./map/焦作市.json')
+    const response = await fetch('http://127.0.0.1:8000/data')
     return await response.json()
   } catch (error) {
     console.error('Error fetching GeoJSON data:', error)
