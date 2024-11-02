@@ -32,7 +32,7 @@ const json = ref('');
 // Fetch GeoJSON data from server
 async function fetchGeoJSON() {
   try {
-    const response = await fetch('./map/中华人民共和国.json');
+    const response = await fetch('./map/焦作市.json');
     const data = await response.json();
     return data;
   } catch (error) {

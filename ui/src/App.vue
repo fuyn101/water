@@ -1,5 +1,5 @@
 <script setup>
-import JsonMap from './components/map.vue';
+import JsonMap from './components/map.vue'
 </script>
 
 <template>
