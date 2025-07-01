@@ -369,6 +369,88 @@ gemini_list_project_keys() {
 }
 # ===== MODIFICATION END =====
 
+# ===== 新增功能: 批量删除所有密钥 =====
+process_key_deletion_for_project() {
+    local project_id="$1"
+    local task_num="$2"
+    local total_tasks="$3"
+    local log_prefix="[${task_num}/${total_tasks}] [${project_id}]"
+
+    log "INFO" "${log_prefix} 开始扫描并删除密钥..."
+    random_sleep
+
+    local keys_json
+    keys_json=$(smart_retry_gcloud gcloud services api-keys list --project="$project_id" --format="json" --quiet)
+    if [ -z "$keys_json" ]; then
+        log "WARN" "${log_prefix} 无法获取密钥列表，跳过。"
+        return
+    fi
+    
+    local key_ids
+    if command -v jq &>/dev/null; then
+        mapfile -t key_ids < <(echo "$keys_json" | jq -r '.keys[].name' | sed "s/.*\///")
+    else
+        mapfile -t key_ids < <(echo "$keys_json" | grep -o '"name": "[^"]*' | cut -d'"' -f4 | sed "s/.*\///")
+    fi
+
+    if [ ${#key_ids[@]} -eq 0 ]; then
+        log "INFO" "${log_prefix} 未找到任何密钥，无需操作。"
+        return
+    fi
+
+    log "INFO" "${log_prefix} 找到 ${#key_ids[@]} 个密钥，准备删除..."
+    local deleted_count=0
+    for key_id in "${key_ids[@]}"; do
+        if smart_retry_gcloud gcloud services api-keys delete "$key_id" --project="$project_id" --quiet >/dev/null 2>&1; then
+            log "SUCCESS" "${log_prefix} 成功删除密钥 ID: ${key_id}"
+            ((deleted_count++))
+        else
+            log "ERROR" "${log_prefix} 删除密钥 ID: ${key_id} 失败。"
+        fi
+    done
+    log "INFO" "${log_prefix} 完成, 共删除了 ${deleted_count} 个密钥。"
+}
+
+gemini_batch_delete_all_keys() {
+    log "INFO" "====== 批量删除所有项目的API密钥 ======"
+    log "INFO" "正在获取您账户下的所有活跃项目列表..."
+    mapfile -t all_projects < <(gcloud projects list --filter='lifecycleState:ACTIVE' --format='value(projectId)' 2>/dev/null)
+
+    if [ ${#all_projects[@]} -eq 0 ]; then
+        log "ERROR" "未找到任何活跃项目。"
+        return
+    fi
+
+    echo -e "\n${RED}${BOLD}!!! 极度危险操作警告 !!!${NC}" >&2
+    echo -e "${YELLOW}此操作将永久删除您 GCP 账户下 ${#all_projects[@]} 个活跃项目中的【所有】API 密钥。${NC}" >&2
+    echo -e "${YELLOW}这个过程是不可逆的，并且不会区分密钥的用途。${NC}" >&2
+    read -r -p "如果您完全理解并希望继续，请输入 'DELETE ALL KEYS' 来确认: " confirmation
+    if [ "$confirmation" != "DELETE ALL KEYS" ]; then
+        log "INFO" "删除操作已取消。"
+        return
+    fi
+
+    log "INFO" "确认成功。开始并行删除所有密钥..."
+    mkdir -p "$OUTPUT_DIR"
+    
+    local job_count=0
+    local total_tasks=${#all_projects[@]}
+    for i in "${!all_projects[@]}"; do
+        local project_id="${all_projects[i]}"
+        process_key_deletion_for_project "$project_id" "$((i+1))" "$total_tasks" &
+        job_count=$((job_count + 1))
+        if [ "$job_count" -ge "$MAX_PARALLEL_JOBS" ]; then
+            wait -n || true
+            job_count=$((job_count - 1))
+        fi
+    done
+
+    log "INFO" "所有删除任务已派发，正在等待完成..."
+    wait
+    log "SUCCESS" "所有项目的密钥删除操作已执行完毕。"
+}
+# ===== 新增功能结束 =====
+
 # ===== 编排函数 =====
 run_parallel_processor() {
     local processor_func="$1"
@@ -610,7 +692,8 @@ EOF
     echo "  2. 从现有项目中提取新 API 密钥" >&2
     echo "  3. 批量删除指定前缀的项目" >&2
     # ===== MODIFICATION START: 新增菜单选项 =====
-    echo "  4. 列出已有项目的 API 密钥" >&2
+    echo "  4. 【高危】删除所有项目的所有API密钥" >&2
+    echo "  5. 列出已有项目的 API 密钥" >&2
     # ===== MODIFICATION END =====
     echo "  0. 退出脚本" >&2
     echo "" >&2
@@ -625,14 +708,15 @@ main_app() {
     do
         show_main_menu
         # ===== MODIFICATION START: 更新输入提示和 case 语句 =====
-        read -r -p "请选择操作 [0-4]: " choice
+        read -r -p "请选择操作 [0-5]: " choice
         case "$choice" in
             1) gemini_batch_create_keys ;;
             2) gemini_extract_from_existing ;;
             3) gemini_batch_delete_projects ;;
-            4) gemini_list_project_keys ;;
+            4) gemini_batch_delete_all_keys ;;
+            5) gemini_list_project_keys ;;
             0) exit 0 ;;
-            *) log "ERROR" "无效输入，请输入 0, 1, 2, 3, 或 4。" ;;
+            *) log "ERROR" "无效输入，请输入 0, 1, 2, 3, 4, 或 5。" ;;
         esac
         # ===== MODIFICATION END =====
         echo -e "\n${GREEN}按任意键返回主菜单...${NC}" >&2
