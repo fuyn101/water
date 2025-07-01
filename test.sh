@@ -531,7 +531,8 @@ process_project_key_deletion() {
 
     local key_ids
     if command -v jq &>/dev/null; then
-        mapfile -t key_ids < <(echo "$key_list_json" | jq -r '.keys[].uid')
+        mapfile -t key_ids < <(echo "$key_list_json" | jq -r '(.keys // .)[].uid')
+
     else
         mapfile -t key_ids < <(echo "$key_list_json" | grep '"uid":' | cut -d'"' -f4)
     fi
