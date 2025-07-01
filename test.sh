@@ -1,8 +1,8 @@
 #!/bin/bash
-# 版本: 3.5.5 - 新增列出已有项目API密钥的功能
-# 更新说明: 添加菜单选项 "4"，允许用户查询并列出指定项目中所有已存在的 API 密钥及其详细信息。
-#           修复说明: 将 enable_api_and_create_key 函数内 gcloud services enable 的输出重定向到 stderr，
-#                     防止其成功消息污染最终返回的 API Key 字符串。
+# 版本: 3.5.5 - 添加批量删除项目内所有密钥的功能
+# 更新说明: 新增功能 '4. 批量删除项目中的所有 API 密钥'，
+#           允许用户选择一个或多个项目，并删除其中的所有 API 密钥。
+#           此功能包含独立的处理逻辑和安全确认步骤。
 
 # 脚本设置：pipefail 依然有用，但移除了 -e，改为手动错误检查
 set -uo pipefail
@@ -19,6 +19,7 @@ BOLD='\033[1m'
 # ===== 环境自检与设置 =====
 setup_environment() {
     echo -e "${CYAN}--- 环境自检与设置 ---${NC}" >&2
+    # ===== MODIFICATION START: 优化依赖检查 =====
     # 检查 'bc' 并尝试安装
     if ! command -v bc &>/dev/null; then
         echo -e "${YELLOW}[!] 核心依赖 'bc' 未找到，正在尝试自动安装...${NC}" >&2
@@ -41,6 +42,7 @@ setup_environment() {
         echo -e "${YELLOW}[!] 推荐依赖 'jq' 未找到。脚本将使用备用方法解析数据，但这可能不稳定。${NC}" >&2
         echo -e "${YELLOW}    建议安装 'jq' 以提高稳定性 (例如: 'sudo apt-get install jq')${NC}" >&2
     fi
+    # ===== MODIFICATION END =====
     echo -e "${CYAN}--- 环境检查完毕 ---\n${NC}" >&2
     sleep 1
 }
@@ -102,6 +104,7 @@ log() {
     clean_log_line="[${timestamp}] [${level}] ${msg}"
     
     echo -e "$log_line" >&2
+    # Ensure directory and lock file exist before trying to log.
     if [ -d "$OUTPUT_DIR" ] && [ -f "${TEMP_DIR}/log.lock" ]; then
         (
             flock -x 9
@@ -131,14 +134,17 @@ smart_retry_gcloud() {
     )
 
     while true; do
+        # Capture both stdout and stderr to check for errors
         output=$( { "$@" 2>&1; } 2>&1 )
         exit_code=$?
 
+        # Success condition: exit code is 0 and no "ERROR:" string in output
         if [ $exit_code -eq 0 ] && ! echo "$output" | grep -q "ERROR:"; then
-            echo "$output"
+            echo "$output" # Print the success output
             return 0
         fi
 
+        # Check for fatal, non-retriable errors
         for pattern in "${fatal_patterns[@]}"; do
             if [[ "$output" == *"$pattern"* ]]; then
                 log "ERROR" "检测到致命且不可重试的错误: '$pattern'"
@@ -148,6 +154,7 @@ smart_retry_gcloud() {
             fi
         done
         
+        # Retry condition
         if [ $n -ge "$MAX_RETRY_ATTEMPTS" ]; then
             log "ERROR" "命令在 ${MAX_RETRY_ATTEMPTS} 次尝试后仍然失败。"
             log "ERROR" "相关命令: '$*'"
@@ -219,10 +226,17 @@ enable_api_and_create_key() {
     local log_prefix="$2"
     
     random_sleep
+    # ===== FIX START: 重定向 API 启用命令的输出 =====
+    # `smart_retry_gcloud` 在成功时会打印命令的输出。对于 `gcloud services enable`，
+    # 这会产生 "Operation ... finished successfully." 之类的消息。
+    # 如果不重定向，这个消息会被 `api_key=$(...)` 命令替换捕获，从而污染 API Key。
+    # 通过 `>&2` 将其标准输出重定向到标准错误，可以确保只有最终的 `echo "$api_key"`
+    # 被捕获，同时保留了在屏幕上看到成功消息的能力。
     if ! smart_retry_gcloud gcloud services enable generativelanguage.googleapis.com --project="$project_id" --quiet >&2; then
         log "ERROR" "${log_prefix} 启用 Generative Language API 失败。"
         return 1
     fi
+    # ===== FIX END =====
     log "INFO" "${log_prefix} API 启用成功。"
 
     random_sleep
@@ -247,6 +261,7 @@ enable_api_and_create_key() {
         return 1
     fi
     
+    # 此函数的唯一标准输出，确保调用者只获得纯净的 key
     echo "$api_key"
     return 0
 }
@@ -262,6 +277,7 @@ process_new_project_creation() {
     log "INFO" "${log_prefix} 开始创建..."
     random_sleep
 
+    # 将创建项目的输出重定向到 stderr，以防万一它也产生不必要的 stdout
     if ! smart_retry_gcloud gcloud projects create "$project_id" --name="$project_id" --quiet >&2; then
         log "ERROR" "${log_prefix} 项目创建失败。"
         echo "$project_id" >> "${TEMP_DIR}/failed.log"
@@ -305,152 +321,6 @@ process_existing_project_extraction() {
     echo "$project_id" >> "${TEMP_DIR}/success.log"
 }
 
-# ===== MODIFICATION START: 新增函数用于列出项目密钥 =====
-gemini_list_project_keys() {
-    log "INFO" "====== 列出指定项目的 API 密钥 ======"
-    log "INFO" "正在获取您账户下的所有活跃项目列表..."
-    mapfile -t all_projects < <(gcloud projects list --filter='lifecycleState:ACTIVE' --format='value(projectId)' 2>/dev/null)
-
-    if [ ${#all_projects[@]} -eq 0 ]; then
-        log "ERROR" "未找到任何活跃项目。"
-        return
-    fi
-    
-    log "INFO" "找到 ${#all_projects[@]} 个活跃项目。请选择要查询的项目:"
-    for i in "${!all_projects[@]}"; do
-        printf "  %3d. %s\n" "$((i+1))" "${all_projects[i]}" >&2
-    done
-
-    local selection
-    read -r -p "请输入您想查询的单个项目编号: " selection
-    
-    local project_id
-    if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le "${#all_projects[@]}" ]; then
-        project_id="${all_projects[$((selection-1))]}"
-    else
-        log "ERROR" "无效的编号: $selection。操作已取消。"
-        return
-    fi
-
-    log "INFO" "正在查询项目 [${project_id}] 的 API 密钥列表..."
-    
-    # 优先使用 jq 进行格式化输出，否则回退到 gcloud 默认的表格输出
-    if command -v jq &>/dev/null; then
-        local keys_json
-        keys_json=$(smart_retry_gcloud gcloud services api-keys list --project="$project_id" --format="json" --quiet)
-        if [ -z "$keys_json" ]; then
-            log "ERROR" "无法获取项目 [${project_id}] 的密钥列表。"
-            return
-        fi
-
-        if [[ $(echo "$keys_json" | jq '.keys | length') -eq 0 ]]; then
-            log "WARN" "项目 [${project_id}] 中没有找到任何 API 密钥。"
-        else
-            log "SUCCESS" "在项目 [${project_id}] 中找到以下 API 密钥:"
-            echo -e "${GREEN}" >&2
-            # 使用 jq 解析并格式化输出
-            echo "$keys_json" | jq -r '.keys[] | "  - 名称 (Display Name): \(.displayName)\n    密钥 (Key String):     \(.keyString)\n    创建时间 (Create Time): \(.createTime)\n"' >&2
-            echo -e "${NC}" >&2
-        fi
-    else
-        log "WARN" "未找到 'jq'。将以默认表格格式显示，可能包含额外信息。" >&2
-        # Fallback to default gcloud table format
-        local key_list_output
-        key_list_output=$(smart_retry_gcloud gcloud services api-keys list --project="$project_id" --quiet)
-        if [ -z "$key_list_output" ] || [[ "$key_list_output" == *"Listed 0 items."* ]]; then
-             log "WARN" "项目 [${project_id}] 中没有找到任何 API 密钥。"
-        else
-            log "SUCCESS" "在项目 [${project_id}] 中找到以下 API 密钥:"
-            echo -e "${GREEN}" >&2
-            echo "$key_list_output" >&2
-            echo -e "${NC}" >&2
-        fi
-    fi
-}
-# ===== MODIFICATION END =====
-
-# ===== 新增功能: 批量删除所有密钥 =====
-process_key_deletion_for_project() {
-    local project_id="$1"
-    local task_num="$2"
-    local total_tasks="$3"
-    local log_prefix="[${task_num}/${total_tasks}] [${project_id}]"
-
-    log "INFO" "${log_prefix} 开始扫描并删除密钥..."
-    random_sleep
-
-    local keys_json
-    keys_json=$(smart_retry_gcloud gcloud services api-keys list --project="$project_id" --format="json" --quiet)
-    if [ -z "$keys_json" ]; then
-        log "WARN" "${log_prefix} 无法获取密钥列表，跳过。"
-        return
-    fi
-    
-    local key_ids
-    if command -v jq &>/dev/null; then
-        mapfile -t key_ids < <(echo "$keys_json" | jq -r '.keys[].name' | sed "s/.*\///")
-    else
-        mapfile -t key_ids < <(echo "$keys_json" | grep -o '"name": "[^"]*' | cut -d'"' -f4 | sed "s/.*\///")
-    fi
-
-    if [ ${#key_ids[@]} -eq 0 ]; then
-        log "INFO" "${log_prefix} 未找到任何密钥，无需操作。"
-        return
-    fi
-
-    log "INFO" "${log_prefix} 找到 ${#key_ids[@]} 个密钥，准备删除..."
-    local deleted_count=0
-    for key_id in "${key_ids[@]}"; do
-        if smart_retry_gcloud gcloud services api-keys delete "$key_id" --project="$project_id" --quiet >/dev/null 2>&1; then
-            log "SUCCESS" "${log_prefix} 成功删除密钥 ID: ${key_id}"
-            ((deleted_count++))
-        else
-            log "ERROR" "${log_prefix} 删除密钥 ID: ${key_id} 失败。"
-        fi
-    done
-    log "INFO" "${log_prefix} 完成, 共删除了 ${deleted_count} 个密钥。"
-}
-
-gemini_batch_delete_all_keys() {
-    log "INFO" "====== 批量删除所有项目的API密钥 ======"
-    log "INFO" "正在获取您账户下的所有活跃项目列表..."
-    mapfile -t all_projects < <(gcloud projects list --filter='lifecycleState:ACTIVE' --format='value(projectId)' 2>/dev/null)
-
-    if [ ${#all_projects[@]} -eq 0 ]; then
-        log "ERROR" "未找到任何活跃项目。"
-        return
-    fi
-
-    echo -e "\n${RED}${BOLD}!!! 极度危险操作警告 !!!${NC}" >&2
-    echo -e "${YELLOW}此操作将永久删除您 GCP 账户下 ${#all_projects[@]} 个活跃项目中的【所有】API 密钥。${NC}" >&2
-    echo -e "${YELLOW}这个过程是不可逆的，并且不会区分密钥的用途。${NC}" >&2
-    read -r -p "如果您完全理解并希望继续，请输入 'DELETE ALL KEYS' 来确认: " confirmation
-    if [ "$confirmation" != "DELETE ALL KEYS" ]; then
-        log "INFO" "删除操作已取消。"
-        return
-    fi
-
-    log "INFO" "确认成功。开始并行删除所有密钥..."
-    mkdir -p "$OUTPUT_DIR"
-    
-    local job_count=0
-    local total_tasks=${#all_projects[@]}
-    for i in "${!all_projects[@]}"; do
-        local project_id="${all_projects[i]}"
-        process_key_deletion_for_project "$project_id" "$((i+1))" "$total_tasks" &
-        job_count=$((job_count + 1))
-        if [ "$job_count" -ge "$MAX_PARALLEL_JOBS" ]; then
-            wait -n || true
-            job_count=$((job_count - 1))
-        fi
-    done
-
-    log "INFO" "所有删除任务已派发，正在等待完成..."
-    wait
-    log "SUCCESS" "所有项目的密钥删除操作已执行完毕。"
-}
-# ===== 新增功能结束 =====
-
 # ===== 编排函数 =====
 run_parallel_processor() {
     local processor_func="$1"
@@ -460,6 +330,7 @@ run_parallel_processor() {
     local pure_key_file="${OUTPUT_DIR}/all_keys.txt"
     local comma_key_file="${OUTPUT_DIR}/all_keys_comma_separated.txt"
 
+    # 初始化输出文件，确保每次运行都是干净的
     > "$pure_key_file"
     > "$comma_key_file"
 
@@ -632,6 +503,145 @@ gemini_batch_delete_projects() {
     log "ERROR" "删除失败: ${failed_count}"
 }
 
+# ===== 新增功能：批量删除项目内所有密钥 =====
+
+process_project_key_deletion() {
+    local project_id="$1"
+    local task_num="$2"
+    local total_tasks="$3"
+    local log_prefix="[${task_num}/${total_tasks}] [${project_id}]"
+
+    log "INFO" "${log_prefix} 开始处理，准备列出密钥..."
+
+    # 要列出或删除密钥，必须启用 apikeys.googleapis.com API。
+    if ! smart_retry_gcloud gcloud services enable apikeys.googleapis.com --project="$project_id" --quiet >&2; then
+        log "ERROR" "${log_prefix} 启用 API Keys API (apikeys.googleapis.com) 失败，无法继续。"
+        echo "$project_id" >> "${TEMP_DIR}/delete_keys_failed_projects.log"
+        return
+    fi
+
+    local key_list_json
+    key_list_json=$(smart_retry_gcloud gcloud services api-keys list --project="$project_id" --format="json")
+    
+    if [ $? -ne 0 ]; then
+        log "ERROR" "${log_prefix} 获取 API 密钥列表失败。"
+        echo "$project_id" >> "${TEMP_DIR}/delete_keys_failed_projects.log"
+        return
+    fi
+
+    local key_ids
+    if command -v jq &>/dev/null; then
+        mapfile -t key_ids < <(echo "$key_list_json" | jq -r '.keys[].uid')
+    else
+        mapfile -t key_ids < <(echo "$key_list_json" | grep '"uid":' | cut -d'"' -f4)
+    fi
+
+    if [ ${#key_ids[@]} -eq 0 ]; then
+        log "INFO" "${log_prefix} 未找到任何 API 密钥，无需操作。"
+        echo "$project_id" >> "${TEMP_DIR}/delete_keys_success_projects.log"
+        return
+    fi
+
+    log "INFO" "${log_prefix} 找到 ${#key_ids[@]} 个密钥，开始删除..."
+    
+    local success_count=0
+    local failed_count=0
+    for key_id in "${key_ids[@]}"; do
+        if [ -z "$key_id" ]; then continue; fi
+        if smart_retry_gcloud gcloud services api-keys delete "$key_id" --project="$project_id" --quiet >/dev/null 2>&1; then
+            log "INFO" "${log_prefix} 成功删除密钥 ID: $key_id"
+            ((success_count++))
+        else
+            log "WARN" "${log_prefix} 删除密钥 ID: $key_id 失败。"
+            ((failed_count++))
+        fi
+    done
+
+    if [ "$failed_count" -eq 0 ]; then
+        log "SUCCESS" "${log_prefix} 成功删除所有 ${success_count} 个密钥。"
+        echo "$project_id" >> "${TEMP_DIR}/delete_keys_success_projects.log"
+    else
+        log "WARN" "${log_prefix} 删除完成。成功: ${success_count}, 失败: ${failed_count}。"
+        echo "$project_id" >> "${TEMP_DIR}/delete_keys_failed_projects.log"
+    fi
+}
+
+gemini_batch_delete_keys() {
+    log "INFO" "====== 批量删除项目内所有 API 密钥 ======"
+    mapfile -t all_projects < <(gcloud projects list --filter='lifecycleState:ACTIVE' --format='value(projectId)' 2>/dev/null)
+
+    if [ ${#all_projects[@]} -eq 0 ]; then
+        log "ERROR" "未找到任何活跃项目。"
+        return
+    fi
+    
+    log "INFO" "找到 ${#all_projects[@]} 个活跃项目。请选择要操作的项目:"
+    for i in "${!all_projects[@]}"; do
+        printf "  %3d. %s\n" "$((i+1))" "${all_projects[i]}" >&2
+    done
+
+    read -r -p "请输入项目编号 (多个用空格隔开，或输入 'all' 处理全部): " -a selections
+    
+    local projects_to_process=()
+    if [[ " ${selections[*],,} " =~ " all " ]]; then
+        projects_to_process=("${all_projects[@]}")
+    else
+        for num in "${selections[@]}"; do
+            if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#all_projects[@]}" ]; then
+                projects_to_process+=("${all_projects[$((num-1))]}")
+            else
+                log "WARN" "无效的编号: $num，已忽略。"
+            fi
+        done
+    fi
+
+    if [ ${#projects_to_process[@]} -eq 0 ]; then
+        log "ERROR" "未选择任何有效项目。"
+        return
+    fi
+
+    mkdir -p "$OUTPUT_DIR"
+
+    echo -e "\n${YELLOW}${BOLD}=== 操作确认 ===${NC}" >&2
+    echo -e "  将要删除以下 ${#projects_to_process[@]} 个项目中的【所有】API密钥:" >&2
+    printf '   - %s\n' "${projects_to_process[@]}" >&2
+    echo -e "  并行任务数:     ${BOLD}${MAX_PARALLEL_JOBS}${NC}" >&2
+    echo -e "\n${RED}${BOLD}!!! 警告：此操作不可逆，将删除所选项目内全部API密钥 !!!${NC}" >&2
+    read -r -p "请输入 'DELETE-KEYS' 来确认删除: " confirmation
+    if [ "$confirmation" != "DELETE-KEYS" ]; then
+        log "INFO" "删除操作已取消。"
+        return
+    fi
+
+    rm -f "${TEMP_DIR}/delete_keys_success_projects.log" "${TEMP_DIR}/delete_keys_failed_projects.log"
+    touch "${TEMP_DIR}/delete_keys_success_projects.log" "${TEMP_DIR}/delete_keys_failed_projects.log"
+    log "INFO" "开始批量删除密钥任务..."
+
+    local job_count=0
+    local total_tasks=${#projects_to_process[@]}
+    for i in "${!projects_to_process[@]}"; do
+        local project_id="${projects_to_process[i]}"
+        process_project_key_deletion "$project_id" "$((i+1))" "$total_tasks" &
+        job_count=$((job_count + 1))
+        if [ "$job_count" -ge "$MAX_PARALLEL_JOBS" ]; then
+            wait -n || true
+            job_count=$((job_count - 1))
+        fi
+    done
+    
+    wait
+    local success_count=$(wc -l < "${TEMP_DIR}/delete_keys_success_projects.log" | tr -d ' ')
+    local failed_count=$(wc -l < "${TEMP_DIR}/delete_keys_failed_projects.log" | tr -d ' ')
+
+    echo -e "\n${GREEN}${BOLD}====== 密钥批量删除完成 ======${NC}" >&2
+    log "SUCCESS" "处理成功的项目数: ${success_count}"
+    log "ERROR" "处理失败或部分失败的项目数: ${failed_count}"
+    if [ "$failed_count" -gt 0 ]; then
+        log "WARN" "失败的项目列表已记录到详细日志中: ${DETAILED_LOG_FILE}"
+    fi
+}
+
+
 report_and_download_results() {
     local comma_key_file="$1"
     local pure_key_file="$2"
@@ -689,12 +699,9 @@ EOF
     echo -e "-----------------------------------------------------" >&2
     echo -e "\n${RED}${BOLD}请注意：滥用此脚本可能导致您的GCP账户受限。${NC}\n" >&2
     echo "  1. 批量创建新项目并提取密钥" >&2
-    echo "  2. 从现有项目中提取新 API 密钥" >&2
+    echo "  2. 从现有项目中提取 API 密钥" >&2
     echo "  3. 批量删除指定前缀的项目" >&2
-    # ===== MODIFICATION START: 新增菜单选项 =====
-    echo "  4. 【高危】删除所有项目的所有API密钥" >&2
-    echo "  5. 列出已有项目的 API 密钥" >&2
-    # ===== MODIFICATION END =====
+    echo "  4. 批量删除项目中的所有 API 密钥" >&2
     echo "  0. 退出脚本" >&2
     echo "" >&2
 }
@@ -707,18 +714,15 @@ main_app() {
     while true;
     do
         show_main_menu
-        # ===== MODIFICATION START: 更新输入提示和 case 语句 =====
-        read -r -p "请选择操作 [0-5]: " choice
+        read -r -p "请选择操作 [0-4]: " choice
         case "$choice" in
             1) gemini_batch_create_keys ;;
             2) gemini_extract_from_existing ;;
             3) gemini_batch_delete_projects ;;
-            4) gemini_batch_delete_all_keys ;;
-            5) gemini_list_project_keys ;;
+            4) gemini_batch_delete_keys ;;
             0) exit 0 ;;
-            *) log "ERROR" "无效输入，请输入 0, 1, 2, 3, 4, 或 5。" ;;
+            *) log "ERROR" "无效输入，请输入 0, 1, 2, 3, 或 4。" ;;
         esac
-        # ===== MODIFICATION END =====
         echo -e "\n${GREEN}按任意键返回主菜单...${NC}" >&2
         read -n 1 -s -r || true
     done
